@@ -17,7 +17,7 @@
 - The Cloudwatch logs to be monitored should be in the lambda env variables and comma(,) separated.
 -- The log group filter will match log group "as-is", i.e it is ASSUMED to be case sensitive,  So make sure the correct log group full names as it appears in the env variable. 
 -- For example: "/aws/lambda/log-group-name". 
--- For multiple log groups: "/aws/lambda/lg1","/aws/lambda/lg2","/aws/lambda/lg3"
+-- For multiple log groups: "/aws/lambda/lg1,/aws/lambda/lg2,/aws/lambda/lg3"
 - The S3 Bucket MUST be in the same region
 - The `retention_days` defaults to 90 days, Customize in `global_vars`
 -- AWS CW Log exports doesn't effectively keep track of logs that are exported previously in a native way. 
@@ -338,8 +338,9 @@ def lambda_handler(event, context):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
-    #wait_coro = asyncio.wait(to_do) 
-    #res, _ = loop.run_until_complete(wait_coro)
+    # asyncio.set_event_loop(asyncio.new_event_loop())
+    # wait_coro = asyncio.wait(to_do) 
+    # res, _ = loop.run_until_complete(wait_coro)
 
     # Lets being the archving/export process
     for lg in f_lgs.get('log_groups'):
