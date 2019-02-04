@@ -1,0 +1,1 @@
+serverless-cloudwatch-logs-exporter
