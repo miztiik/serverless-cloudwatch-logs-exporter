@@ -3,7 +3,6 @@
 .. module: Export Logs from cloudwatch & Store in given S3 Bucket
     :platform: AWS
     :copyright: (c) 2019 Mystique.,
-    :license: Apache, see LICENSE for more details.
 .. moduleauthor:: Mystique
 .. contactauthor:: miztiik@github issues
 """
@@ -23,7 +22,7 @@
 -- AWS CW Log exports doesn't effectively keep track of logs that are exported previously in a native way. 
 -- To avoid exporting the same data twice, this script uses a timeframe of 24 hour period. This period is the 90th day in the past.
 -- Run the script everyday to keep the log export everyday.
-----------------------|<------LOG EXPORT PERIOD------>|---------------------------------------|
+----------------------|<------LOG EXPORT PERIOD------>|----------------------------------------|
                     91stDay                        90thDay                                   Today
 - The default time for awaiting task completion is 5 Minutes(300 Seconds). Customize in `global_vars`
 - FROM AWS Docs,Export task:One active (running or pending) export task at a time, per account. This limit cannot be changed.
@@ -76,7 +75,6 @@ import datetime
 import asyncio
 import json
 import logging
-from botocore.vendored import requests
 from botocore.client import ClientError
 
 # Initialize Logger
@@ -99,11 +97,12 @@ def set_global_vars():
         global_vars["Environment"]              = "Prod"
         global_vars["aws_region"]               = "us-east-1"
         global_vars["tag_name"]                 = "serverless_cloudwatch_logs_exporter"
-        global_vars["retention_days"]           = 90
-        global_vars["cw_logs_to_export"]        = ["/aws/lambda/indian-space-facts","/aws/lambda/Asislambda"]
+        global_vars["retention_days"]           = 35
+        global_vars["cw_logs_to_export"]        = ["/aws/lambda/trending_news"]
         #global_vars["cw_logs_to_export"]        = os.environ.get("cw_logs_to_export").split(",")
         global_vars["log_dest_bkt"]             = "cw-log-exports-01"
         global_vars["time_out"]                 = 300
+        global_vars["tsk_back_off"]             = 2
         global_vars["status"]                   = True
     except Exception as e:
         logger.error("Unable to set Global Environment variables. Exiting")
@@ -126,9 +125,19 @@ def gen_ymd_from_epoch(t):
     )
     return ymd
 
-def gen_ymd(t):
-    """ Generates a string of the format "YYYY-MM-DD" from datetime"""
-    ymd =  ( str(t.year) + "-" + str(t.month) + "-"  + str(t.day) )
+def gen_ymd(t,d) -> str:
+    """
+    Generates a string of the format "YYYY MM DD" from the given datetime, uses the delimited passed
+
+    :param t: Python Datetime
+    :param type: Datetime
+    :param d: The delimitter to be used
+    :param type: str
+
+    :return: ymd Return a "YYYY MM DD" string with the given delimiter
+    :rtype: json
+    """
+    ymd =  ( str(t.year) + d + str(t.month) + d + str(t.day) )
     return ymd
 
 def does_bucket_exists( bucket_name ):
@@ -234,7 +243,11 @@ async def export_cw_logs_to_s3(global_vars, log_group_name, retention_days, buck
     n_day = now_time - datetime.timedelta(days = int(retention_days))
     f_time = int(n1_day.timestamp() * 1000)
     t_time = int(n_day.timestamp() * 1000)
-    d_prefix = str( log_group_name.replace("/","-")[1:] ) + "/" +str( gen_ymd(n1_day) )
+    # To specifially deal with loggroup names without '/'
+    if '/' in log_group_name:
+        d_prefix = str( log_group_name.replace("/","-")[1:] ) + "/" + str( gen_ymd(n1_day, '/') )
+    else:
+        d_prefix = str( log_group_name.replace("/","-") ) + "/" + str( gen_ymd(n1_day, '/') )
     # d_prefix = str( log_group_name.replace("/","-")[1:] )
     # Check if S3 Bucket Exists
     resp = does_bucket_exists(bucket_name)
@@ -252,7 +265,7 @@ async def export_cw_logs_to_s3(global_vars, log_group_name, retention_days, buck
                 destinationPrefix = d_prefix
                 )
         # Get the status of each of those asynchronous export tasks
-        r = get_tsk_status(r.get('taskId'), global_vars.get('time_out'))
+        r = get_tsk_status(r.get('taskId'), global_vars.get('time_out'), global_vars.get('tsk_back_off'))
         if resp.get('status'):
             resp_data['task_info'] = r.get('tsk_info')
             resp_data['status'] = True
@@ -262,7 +275,7 @@ async def export_cw_logs_to_s3(global_vars, log_group_name, retention_days, buck
         resp_data['error_message'] = str(e)
     return resp_data
 
-def get_tsk_status(tsk_id, time_out):
+def get_tsk_status(tsk_id, time_out, tsk_back_off):
     """
     Get the status of the export task list until `time_out`.
 
@@ -277,10 +290,11 @@ def get_tsk_status(tsk_id, time_out):
     resp_data = {'status': False, 'tsk_info':{}, 'error_message': ''}
     client = boto3.client('logs')
     if not time_out: time_out = 300
-    t = 3
+    t = tsk_back_off
     try:
         # Lets get all the logs
         while True:
+            time.sleep(t)
             resp = client.describe_export_tasks(taskId = tsk_id)
             tsk_info = resp['exportTasks'][0]
             if t > int(time_out):
@@ -290,13 +304,15 @@ def get_tsk_status(tsk_id, time_out):
             if tsk_info['status']['code'] != "COMPLETED":
                 # Crude exponential back off
                 t*=2
-                time.sleep(t)
+
             else:
                 resp_data['tsk_info'] = tsk_info
                 resp_data['status'] = True
                 break
     except Exception as e:
         resp_data['error_message'] = f"Unable to verify status of task:{tsk_id}. ERROR:{str(e)}"
+    resp_data['tsk_info']['time_taken'] = t
+    logger.info(f"It took {t} seconds to explort Log Group:'{tsk_info.get('logGroupName')}'")
     return resp_data
 
 def lambda_handler(event, context):
